@@ -1,14 +1,20 @@
+'''
+Created on Mar 31, 2015
+Tries to download all of the water quality data 
+from the www.water.ca.gov website
+@author: jbolorinos
+'''
+
 from urllib import request, parse
 from bs4 import BeautifulSoup
+from selenium.selenium import selenium
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
 import sqlite3
-import queue
-import shutil
-import csv
 import os
-from os import path
+from queue import Queue
+import csv
 import time
 
 
@@ -21,13 +27,75 @@ def get_form_field_names(url):
         if form.has_attr('id'):
             form_list.append(form['id'])
     return form_list
- 
 
-def download_all_water_data(data_format, browser, wql_start_url, region_list, download_dir, download_filename, wait_time_interval):
-    start_time = time.clock()
+def download_all_water_data(data_format, browser, wql_start_url, region_list, combine_all_regions, download_dir, wait_time_interval):
+    start_time = time.time()
     default_download_dir = '/Users/user/Downloads'
     default_download_filename = 'GWLData.csv'
     
+    # Open the sql connection and prepare sql tables 
+    conn = sqlite3.connect(':memory:', check_same_thread = False)
+    cursor = conn.cursor()
+    cursor.execute(
+        '''CREATE TABLE well_data(
+        id INTEGER PRIMARY KEY,
+        Region TEXT,
+        Basin TEXT,
+        Township TEXT,
+        Use TEXT,        
+        State_Well_Number TEXT, 
+        Measurement_Date TEXT, 
+        RP_Elevation TEXT, 
+        GS_Elevation TEXT,
+        RPWS TEXT,
+        WSE TEXT,  
+        GSWS TEXT,    
+        QM_Code TEXT,    
+        NM_Code TEXT,  
+        Agency TEXT,    
+        Comment TEXT
+        )'''
+    )
+    
+    cursor.execute(
+        ''' CREATE TABLE well_coords(
+        id INTEGER PRIMARY KEY,
+        Region TEXT,
+        Basin TEXT,
+        Township TEXT,
+        Use TEXT,
+        State_Well_Number TEXT,           
+        Projection TEXT,
+        Datum TEXT,    
+        Easting TEXT,   
+        Northing TEXT,   
+        Units TEXT,   
+        Zone TEXT     
+        )'''
+    )    
+    
+    SQL_import_data = """insert into well_data
+                         (Region, Basin, Township, Use, State_Well_Number, Measurement_Date, RP_Elevation, GS_Elevation, RPWS, WSE, GSWS, QM_Code, NM_Code, Agency, Comment)
+                         values('%s', '%s', '%s', '%s', :State_Well_Number, :Measurement_Date, :RP_Elevation, :GS_Elevation, :RPWS, :WSE, :GSWS, :QM_Code, :NM_Code, :Agency, :Comment)
+                      """
+    SQL_import_coords = """insert into well_coords
+                           (Region, Basin, Township, Use, State_Well_Number, Projection, Datum, Easting, Northing, Units, Zone)
+                           values('%s', '%s', '%s', '%s', '%s', :Projection, :Datum, :Easting, :Northing, :Units, :Zone)
+                        """         
+    empty_imp_data = """insert into well_data
+                        (Region, Basin, Township, Use, State_Well_Number, Measurement_Date, RP_Elevation, GS_Elevation, RPWS, WSE, GSWS, QM_Code, NM_Code, Agency, Comment)
+                        values('%s', '%s', '%s', '%s', '%s', 'NA', 'NA', 'NA', 'NA', 'NA', 'NA', 'NA', 'NA', 'NA', 'NA')
+                     """
+    
+    empty_imp_coords = """insert into well_coords
+                          (Region, Basin, Township, Use, State_Well_Number, Projection, Datum, Easting, Northing, Units, Zone)
+                          values('%s', '%s', '%s', '%s', '%s', 'NA', 'NA', 'NA', 'NA', 'NA', 'NA')
+                       """                       
+    
+    # Initialize a variable name for the Queue() object
+    queue = Queue()
+    
+    # Set browser type according to user specification
     if browser == 'Chrome':
         driver = webdriver.Chrome()
     elif browser == 'Firefox':
@@ -39,6 +107,86 @@ def download_all_water_data(data_format, browser, wql_start_url, region_list, do
     
     # Open the water quality download index page    
     driver.get(wql_start_url)
+
+    def download_csv_from_website(well):
+        select_well = Select(driver.find_element_by_name('wellNumber'))
+        select_well.select_by_visible_text(well)                                            
+        select_format = Select(driver.find_element_by_name('OPformat'))
+        select_format.select_by_visible_text(data_format)
+        driver.find_element_by_name('cmdSubmit').click() 
+        try:
+            alert = driver.switch_to_alert()
+            alert.accept()
+            print("No data available for well: %s" %(well))
+            return 0
+        except:         
+            return 1
+
+    def get_tables_from_csv(input_path): 
+        input = csv.reader(open(input_path, 'rt'))
+        # Break Input data into multiple csv_objects, returning a list of lists (each being a row in the table) for each table
+        tables = []
+        table = []
+        for row in input:
+            if not row:
+                tables.append(table)       
+                table = []     
+            else:
+                table.append(row)
+        tables.append(table)
+        return tables
+    
+    def load_csv_to_sql(tables):    
+        use = 'NA'
+        # If the csv file contains two tables then load each (if non-empty) into the sql database
+        if tables and len(tables) == 2:
+            if tables[1]:
+                use = tables[1][len(tables[1])-1][0]   
+                cursor.executemany(SQL_import_coords %(region, basin, township, use, well), tables[1][2:len(tables[1])-2] )             
+            if tables[0]:         
+                cursor.executemany(SQL_import_data %(region, basin, township, use), tables[0][1:])
+        # If the csv file only contains one table then load the table into the correct database by checking its header first
+        # Insert missing values into the other table database
+        elif tables and tables[0]:
+            if  'State Well Number' in tables[0][0]:
+                cursor.executemany(SQL_import_data %(region, basin, township, use), tables[0][1:])
+                cursor.execute(empty_imp_coords %(region, basin, township, use, well))   
+                print("No coordinate data available for well: %s" %(well))                       
+            elif 'Well Coordinate Information' in tables[0][0]:
+                cursor.executemany(SQL_import_coords %(region, basin, township, use, well), tables[1][2:len(tables[1])-2] )
+                cursor.execute(empty_imp_data %(region, basin, township, use, well))
+                print("No data available for well: %s" %(well))
+        # Insert missing values for wells with no data
+        else: 
+            cursor.execute(empty_imp_data %(region, basin, township, use, well))
+            cursor.execute(empty_imp_coords %(region, basin, township, use, well)) 
+            print("No data available for well: %s" %(well))
+        conn.commit()         
+        return
+    
+    def download_and_store_well_data(well):        
+        data_available = download_csv_from_website(well)
+        tables = [[]]
+        if data_available:
+            # Wait until the file has finished downloading before trying to load it into the sql database
+            wait_time = 0
+            while os.path.isfile(default_download_dir + '/' + default_download_filename) == False:
+                time.sleep(wait_time_interval)
+                wait_time += wait_time_interval
+                if wait_time > 60:
+                    print('Error: Script Aborted because the file for well ' + well + ' never finished downloading')
+                    quit()         
+            tables = get_tables_from_csv(default_download_dir + '/' + default_download_filename)
+        try:
+            load_csv_to_sql(tables)
+        except IndexError:
+            print('Skipped data for well %s in %s Region, %s Basin , Township %s because of data irregularity' %(well, region, basin, township))
+        except:
+            print('Skipped data for well %s in %s Region, %s Basin , Township %s due to unknown error' %(well, region, basin, township))
+        if data_available:
+            os.remove(default_download_dir + '/' + default_download_filename)        
+        print('Downloaded and stored data for %s %s %s %s' %(region, basin, township, well))
+        return
 
     # Start a loop through all of the regions
     for region in region_list:
@@ -105,64 +253,80 @@ def download_all_water_data(data_format, browser, wql_start_url, region_list, do
                                 all_well_names = []
                                 for well in all_wells:
                                     all_well_names.append(well.get_attribute('text'))
-                                if all_well_names != []:
+                                if all_well_names != []:                              
                                     for well in all_well_names:
-                                        download_filename = region.replace(' ','-') + '_' + basin.replace(' ','-') + '_' + well + '.csv'
-                                        select_well = Select(driver.find_element_by_name('wellNumber'))
-                                        select_well.select_by_visible_text(well)                                            
-                                        select_format = Select(driver.find_element_by_name('OPformat'))
-                                        select_format.select_by_visible_text(data_format)
-                                        
-                                        driver.find_element_by_name('cmdSubmit').click()
-                                        print('Downloading data for: ' + download_filename)
-
-                                        
-                                        # Wait until the file has finished downloading before moving it and continuing the loop
-                                        wait_time = 0
-                                        while os.path.isfile(default_download_dir + '/' + default_download_filename) == False:
-                                            time.sleep(wait_time_interval)
-                                            wait_time += wait_time_interval
-                                            if wait_time > 60:
-                                                print('Error: Script Aborted because file for: ' + download_filename + ' never finished downloading')
-                                                return                                             
-                                        
-                                        # Move file to the directory where you want it and name it appropriately
-                                        os.rename(default_download_dir + '/' + default_download_filename, download_dir + '/' + download_filename)                                        
-                                        # Wait until the file has finished being moved before continuing the loop
-                                        wait_time = 0
-                                        while os.path.isfile(download_dir + '/' + download_filename) == False:
-                                            time.sleep(wait_time_interval)
-                                            wait_time += wait_time_interval
-                                            if wait_time > 10:
-                                                print('Error: Script Aborted because ' + download_dir + '/' + download_filename + ' was not renamed')
-                                                return        
-                                        # If it it hasn't been done already, delete the source file in the downloads folder
-                                        if os.path.isfile(default_download_dir + '/' + default_download_filename):
-                                            os.remove(default_download_dir + '/' + default_download_filename)
-                                            # Wait until the file has finished being deleted before continuing the loop
-                                            wait_time = 0
-                                            while os.path.isfile(default_download_dir + '/' + default_download_filename) == True:
-                                                time.sleep(wait_time_interval)
-                                                wait_time += wait_time_interval
-                                                if wait_time > 10:
-                                                    print('Error: Script Aborted because ' + default_download_dir + '/' + default_download_filename + ' was not deleted')
-                                                    return                                                                                                     
-                                                                              
-                                        # Print a message to the log and keep a record of all of the wells/townships/basins/regions with data
-                                        print('Successfully downloaded ' + download_filename)
-                                        if well not in wells_with_data:
-                                            wells_with_data.append([region,basin,township,well])
-    
+                                        if well != None:
+                                            queue.put(well)
+                                    while not queue.empty():
+                                        if os.path.isfile(default_download_dir + '/' + default_download_filename) == False:
+                                            well = queue.get()
+                                            download_and_store_well_data(well)
+                                else:
+                                    print("No data available for township: %s" %(township))
+                                    cursor.execute(empty_imp_data %(region, basin, township, 'NA', 'NA'))
+                    else:
+                        print("No data available for %s basin" %(basin))
+                        cursor.execute(empty_imp_data %(region, basin, 'NA', 'NA', 'NA'))                
+        else:
+            print("No data available for %s region" %(region))
+            cursor.execute(empty_imp_data %(region, 'NA', 'NA', 'NA', 'NA'))
+            
+        #Write the region's well data in memory to a csv file in the desired directory
+        all_rows = cursor.execute("""SELECT * FROM well_data WHERE Region = '%s' """ %(region))        
+        with open(download_dir + '/%s_gwl_well_data.csv' %(region.replace(' ','-')), 'w', newline = '' ) as csv_file:
+            writer = csv.writer(csv_file, delimiter=',')
+            # Write the header to the output file
+            writer.writerow([i[0] for i in all_rows.description])          
+            for row in all_rows:
+                writer.writerow(row)
+                
+        #Write the region's well coordinate information in memory to a csv file in the desired directory
+        all_rows = cursor.execute("""SELECT * FROM well_coords WHERE Region = '%s' """ %(region))        
+        with open(download_dir + '/%s_well_coordinate_data.csv' %(region.replace(' ','-')), 'w', newline = '' ) as csv_file:
+            writer = csv.writer(csv_file, delimiter=',')
+            # Write the header to the output file
+            writer.writerow([i[0] for i in all_rows.description])          
+            for row in all_rows:
+                writer.writerow(row)
+        
+        minutes_elapsed = (time.time() - start_time)/60
+        print('Finished downloading well data for %s. The process took %i minutes' %(region, minutes_elapsed))
+                
+    # Close browser when Finished
     driver.close()
-    end_time = time.clock()
-    minutes_elapsed = (end_time - start_time)/60
-    print('Data finished downloading. The process took: ' + minutes_elapsed + ' minutes')
-    return wells_with_data                      
+    
+    if combine_all_regions:
+        #Write the well data in memory to a csv file in the desired directory
+        all_rows = cursor.execute('''SELECT * FROM well_data''')        
+        with open(download_dir + '/all_regions_gwl_well_data.csv', 'w', newline = '' ) as csv_file:
+            writer = csv.writer(csv_file, delimiter=',')
+            # Write the header to the output file
+            writer.writerow([i[0] for i in all_rows.description])
+            for row in all_rows:
+                writer.writerow(row)
+                
+        #Write the well coordinate information in memory to a csv file in the desired directory
+        all_rows = cursor.execute('''SELECT * FROM well_coords''')        
+        with open(download_dir + '/all_regions_well_coordinate_data.csv', 'w', newline = '' ) as csv_file:
+            writer = csv.writer(csv_file, delimiter=',')
+            # Write the header to the output file
+            writer.writerow([i[0] for i in all_rows.description])
+            for row in all_rows:       
+                writer.writerow(row)
+                
+    #Close SQL connection
+    conn.close()       
+    
+    #Print time elapsed to the log
+    minutes_elapsed = (time.time() - start_time)/60
+    print('Data finished downloading. The process took: ' + minutes_elapsed + ' minutes')                      
 
-wells_with_data = download_all_water_data('Text', 
-                                          'Chrome',
-                                          'http://www.water.ca.gov/waterdatalibrary/groundwater/hydrographs/index.cfm',
-                                          ['Sacramento River'],
-                                          '/Users/user/Documents/California Water Data/Groundwater Level Data',
-                                          'GWL_Data',
-                                          0.1)
+download_all_water_data('Text', 
+                        'Chrome',
+                        'http://www.water.ca.gov/waterdatalibrary/groundwater/hydrographs/index.cfm',
+                        ['Central Coast', 'Colorado River', 'North Coast', 'North Lahontan', 'Sacramento River', 
+                         'San Francisco Bay', 'San Joaquin River', 'South Coast' , 'South Lahontan', 'Tulare Lake'],
+                        1,
+                        '/Users/user/Documents/California Water Data/Groundwater Level Data',
+                        0.1
+                        )
