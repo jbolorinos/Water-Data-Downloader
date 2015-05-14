@@ -28,8 +28,9 @@ def get_form_field_names(url):
             form_list.append(form['id'])
     return form_list
 
-def download_all_water_data(data_format, browser, wql_start_url, region_list, combine_all_regions, download_dir, wait_time_interval):
+def download_all_water_data(data_format, browser, wql_start_url, region_list, combine_all_regions, download_dir, wait_time_interval, nthreads):
     start_time = time.time()
+    next_start_time = start_time
     default_download_dir = '/Users/user/Downloads'
     default_download_filename = 'GWLData.csv'
     
@@ -289,7 +290,8 @@ def download_all_water_data(data_format, browser, wql_start_url, region_list, co
             for row in all_rows:
                 writer.writerow(row)
         
-        minutes_elapsed = (time.time() - start_time)/60
+        minutes_elapsed = (time.time() - next_start_time)/60
+        next_start_time = time.time()
         print('Finished downloading well data for %s. The process took %i minutes' %(region, minutes_elapsed))
                 
     # Close browser when Finished
@@ -324,9 +326,12 @@ def download_all_water_data(data_format, browser, wql_start_url, region_list, co
 download_all_water_data('Text', 
                         'Chrome',
                         'http://www.water.ca.gov/waterdatalibrary/groundwater/hydrographs/index.cfm',
-                        ['Central Coast', 'Colorado River', 'North Coast', 'North Lahontan', 'Sacramento River', 
-                         'San Francisco Bay', 'San Joaquin River', 'South Coast' , 'South Lahontan', 'Tulare Lake'],
+                        ['South Coast' , 'South Lahontan', 'Tulare Lake'],
                         1,
                         '/Users/user/Documents/California Water Data/Groundwater Level Data',
-                        0.1
+                        0.1,
+                        2
                         )
+
+
+
