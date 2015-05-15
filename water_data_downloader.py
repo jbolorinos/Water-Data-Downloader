@@ -28,7 +28,7 @@ def get_form_field_names(url):
             form_list.append(form['id'])
     return form_list
 
-def download_all_water_data(data_format, browser, wql_start_url, region_list, combine_all_regions, download_dir, wait_time_interval, nthreads):
+def download_all_water_level_data(data_format, browser, wql_start_url, region_list, download_dir, wait_time_interval):
     start_time = time.time()
     next_start_time = start_time
     default_download_dir = '/Users/user/Downloads'
@@ -296,42 +296,23 @@ def download_all_water_data(data_format, browser, wql_start_url, region_list, co
                 
     # Close browser when Finished
     driver.close()
-    
-    if combine_all_regions:
-        #Write the well data in memory to a csv file in the desired directory
-        all_rows = cursor.execute('''SELECT * FROM well_data''')        
-        with open(download_dir + '/all_regions_gwl_well_data.csv', 'w', newline = '' ) as csv_file:
-            writer = csv.writer(csv_file, delimiter=',')
-            # Write the header to the output file
-            writer.writerow([i[0] for i in all_rows.description])
-            for row in all_rows:
-                writer.writerow(row)
-                
-        #Write the well coordinate information in memory to a csv file in the desired directory
-        all_rows = cursor.execute('''SELECT * FROM well_coords''')        
-        with open(download_dir + '/all_regions_well_coordinate_data.csv', 'w', newline = '' ) as csv_file:
-            writer = csv.writer(csv_file, delimiter=',')
-            # Write the header to the output file
-            writer.writerow([i[0] for i in all_rows.description])
-            for row in all_rows:       
-                writer.writerow(row)
                 
     #Close SQL connection
     conn.close()       
     
     #Print time elapsed to the log
     minutes_elapsed = (time.time() - start_time)/60
-    print('Data finished downloading. The process took: ' + minutes_elapsed + ' minutes')                      
+    print('Data finished downloading. The process took: %i minutes' %(minutes_elapsed))                      
 
-download_all_water_data('Text', 
-                        'Chrome',
-                        'http://www.water.ca.gov/waterdatalibrary/groundwater/hydrographs/index.cfm',
-                        ['South Coast' , 'South Lahontan', 'Tulare Lake'],
-                        1,
-                        '/Users/user/Documents/California Water Data/Groundwater Level Data',
-                        0.1,
-                        2
-                        )
+download_all_water_level_data('Text', 
+                              'Chrome',
+                              'http://www.water.ca.gov/waterdatalibrary/groundwater/hydrographs/index.cfm',
+                              ['South Lahontan', 'Tulare Lake'],
+                              '/Users/user/Documents/California Water Data/Groundwater Level Data',
+                              0.1
+                              )
+
+
 
 
 
