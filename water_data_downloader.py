@@ -16,6 +16,7 @@ import os
 from queue import Queue
 import csv
 import time
+from math import ceil
 
 
 def get_form_field_names(url): 
@@ -34,46 +35,18 @@ def download_all_water_level_data(data_format, browser, wql_start_url, region_li
     default_download_dir = '/Users/user/Downloads'
     default_download_filename = 'GWLData.csv'
     
-    # Open the sql connection and prepare sql tables 
-    conn = sqlite3.connect(':memory:', check_same_thread = False)
-    cursor = conn.cursor()
-    cursor.execute(
-        '''CREATE TABLE well_data(
-        id INTEGER PRIMARY KEY,
-        Region TEXT,
-        Basin TEXT,
-        Township TEXT,
-        Use TEXT,        
-        State_Well_Number TEXT, 
-        Measurement_Date TEXT, 
-        RP_Elevation TEXT, 
-        GS_Elevation TEXT,
-        RPWS TEXT,
-        WSE TEXT,  
-        GSWS TEXT,    
-        QM_Code TEXT,    
-        NM_Code TEXT,  
-        Agency TEXT,    
-        Comment TEXT
-        )'''
-    )
-    
-    cursor.execute(
-        ''' CREATE TABLE well_coords(
-        id INTEGER PRIMARY KEY,
-        Region TEXT,
-        Basin TEXT,
-        Township TEXT,
-        Use TEXT,
-        State_Well_Number TEXT,           
-        Projection TEXT,
-        Datum TEXT,    
-        Easting TEXT,   
-        Northing TEXT,   
-        Units TEXT,   
-        Zone TEXT     
-        )'''
-    )    
+    # Prepare SQL statements       
+    SQL_create_data_table = '''CREATE TABLE well_data
+                               (id INTEGER PRIMARY KEY, Region TEXT, Basin TEXT, Township TEXT, Use TEXT, State_Well_Number TEXT, Measurement_Date TEXT, 
+                                RP_Elevation TEXT, GS_Elevation TEXT, RPWS TEXT, WSE TEXT, GSWS TEXT, QM_Code TEXT, NM_Code TEXT, Agency TEXT, Comment TEXT
+                                )
+                            '''
+     
+    SQL_create_coord_table = ''' CREATE TABLE well_coords(
+                                 id INTEGER PRIMARY KEY, Region TEXT, Basin TEXT, Township TEXT, Use TEXT, State_Well_Number TEXT,           
+                                 Projection TEXT, Datum TEXT, Easting TEXT, Northing TEXT, Units TEXT, Zone TEXT     
+                                 )
+                             '''
     
     SQL_import_data = """insert into well_data
                          (Region, Basin, Township, Use, State_Well_Number, Measurement_Date, RP_Elevation, GS_Elevation, RPWS, WSE, GSWS, QM_Code, NM_Code, Agency, Comment)
@@ -125,7 +98,7 @@ def download_all_water_level_data(data_format, browser, wql_start_url, region_li
 
     def get_tables_from_csv(input_path): 
         input = csv.reader(open(input_path, 'rt'))
-        # Break Input data into multiple csv_objects, returning a list of lists (each being a row in the table) for each table
+        # Break input data into multiple csv_objects, returning a list of lists (each being a row in the table) for each table
         tables = []
         table = []
         for row in input:
@@ -191,17 +164,22 @@ def download_all_water_level_data(data_format, browser, wql_start_url, region_li
 
     # Start a loop through all of the regions
     for region in region_list:
+        
+        # Open the SQL connection and create the table for the given region
+        conn = sqlite3.connect(':memory:')
+        cursor = conn.cursor()
+        cursor.execute(SQL_create_data_table)    
+        cursor.execute(SQL_create_coord_table)         
+        
         # Reload the URL for each iteration so objects aren't lost
         driver.get(wql_start_url)
         region_selection = Select(driver.find_element_by_name('select1'))
         print("Checking Region: " + region)
         region_selection.select_by_visible_text(region)
         driver.find_element_by_name('Search1').click()
-        all_basins = driver.find_element_by_xpath("//select[@name = 'select2']")
+        all_basins = driver.find_element_by_name('select2')
         all_basins = all_basins.find_elements_by_tag_name('option')
         all_basin_names = []
-        
-        wells_with_data = []
         
         for basin in all_basins:
             all_basin_names.append(basin.get_attribute('text'))
@@ -262,6 +240,8 @@ def download_all_water_level_data(data_format, browser, wql_start_url, region_li
                                         if os.path.isfile(default_download_dir + '/' + default_download_filename) == False:
                                             well = queue.get()
                                             download_and_store_well_data(well)
+                                        else:
+                                            os.remove(default_download_dir + '/' + default_download_filename)
                                 else:
                                     print("No data available for township: %s" %(township))
                                     cursor.execute(empty_imp_data %(region, basin, township, 'NA', 'NA'))
@@ -293,12 +273,12 @@ def download_all_water_level_data(data_format, browser, wql_start_url, region_li
         minutes_elapsed = (time.time() - next_start_time)/60
         next_start_time = time.time()
         print('Finished downloading well data for %s. The process took %i minutes' %(region, minutes_elapsed))
+        
+        #Close SQL connection
+        conn.close()       
                 
     # Close browser when Finished
     driver.close()
-                
-    #Close SQL connection
-    conn.close()       
     
     #Print time elapsed to the log
     minutes_elapsed = (time.time() - start_time)/60
@@ -312,7 +292,204 @@ download_all_water_level_data('Text',
                               0.1
                               )
 
+def download_all_water_quality_data(browser, wql_start_url, download_dir):
+    
+    # Parameters for the run
+    default_download_dir = '/Users/user/Downloads'
+    default_download_filename = 'WQData.xls'
+    download_limit = 15 # This is the number of files to download at the same time
+    wait_time_interval = 0.1 # This is the increment by which the program is put to sleep while waiting for a file to download/delete
+    download_timeout = 300
+    table_load_timeout = 10
+    
+    start_time = time.time()
+    next_start_time = time.time()
+    
+    # Prepare sql statements    
+    SQL_create_table = """ create table wql_data(
+                            id INTEGER PRIMARY KEY, County TEXT, Long_Station_Name TEXT, Short_Station_Name TEXT, Station_Number TEXT, Sample_Code TEXT, Collection_Date TEXT,  Analyte TEXT,    
+                            CAS_Reg_Number TEXT, Result TEXT, Rpt_Limit TEXT, Units TEXT, Method TEXT, Depth TEXT, Matrix TEXT, Purpose TEXT, Parent_Sample TEXT, Description TEXT, Notes TEXT
+                           )
+                       """
+    
+    SQL_import_data = """insert into wql_data(
+                         County, Long_Station_Name, Short_Station_Name, Station_Number, Sample_Code, Collection_Date, Analyte, 
+                         CAS_Reg_Number, Result, Rpt_Limit, Units, Method, Depth, Matrix, Purpose, Parent_Sample, Description, Notes
+                         )
+                         values(
+                         '%s', :Long_Station_Name, :Short_Station_Name, :Station_Number, :Sample_Code, :Collection_Date, :Analyte, 
+                         :CAS_Reg_Number, :Result, :Rpt_Limit, :Units, :Method, :Depth, :Matrix, :Purpose, :Parent_Sample, :Description, :Notes
+                         )
+                      """
+    
+    # Initialize a variable name for the Queue() object
+    queue = Queue()                       
+    
+    # Set browser type according to user specification
+    if browser == 'Chrome':
+        driver = webdriver.Chrome()
+    elif browser == 'Firefox':
+        driver = webdriver.Firefox()
+    elif browser == 'Ie':
+        driver = webdriver.Ie()
+    else:
+        driver = webdriver.Remote()
+    
+    # Open the water quality download index page    
+    driver.get(wql_start_url) 
+    
+    # Get a lit of all counties
+    all_counties = driver.find_element_by_name('ddmCounty')   
+    all_counties = all_counties.find_elements_by_tag_name('option')
+    all_county_names = []       
+    for county in all_counties:
+        all_county_names.append(county.get_attribute('text'))
+    
+    all_county_names = ['Tulare', 'Tuolumne', 'Ventura', 'Yolo', 'Yuba']
+    
+    # Loop through each county to get data
+    for county in all_county_names:
+        if county:
+            
+            # Open the SQL connection and create the table
+            conn = sqlite3.connect(':memory:')
+            cursor = conn.cursor()
+            cursor.execute(SQL_create_table)
+            
+            # Reload the page for each county
+            driver.get(wql_start_url)             
+            county_selection = Select(driver.find_element_by_name('ddmCounty'))
+            print("Checking County: " + county)
+            
+            #Select County
+            county_selection.select_by_visible_text(county)
+            driver.find_element_by_name('chkWDIS').click()
+            button_xpath = '//input[@type="submit" and @value="Get Stations"]'
+            driver.find_element_by_xpath(button_xpath).click()
+            
+            # Here, download data for wells in groups of 15 (the max number of files that can be selected at the same time)
+            # and then download the wells that are leftover
+            all_stations = driver.find_elements_by_name('boxStationID') 
+            all_station_ids = [] 
+            for station in all_stations:
+                all_station_ids.append(station.get_attribute('value'))
+                       
+            nwells = len(all_stations)
+            nselections = ceil(nwells/download_limit)
+            start_index = 0   
+            
+            for sel in range(nselections):
+                queue.put(sel) 
+            
+            while not queue.empty():
+                if os.path.isfile(default_download_dir + '/' + default_download_filename) == False:
+                    sel = queue.get()
+                    nchecks = download_limit
+                    if sel == nselections - 1:
+                        nchecks = nwells%download_limit
+                     
+                    # Check the appropriate number of boxes in the form    
+                    for checkno in range(nchecks):
+                        checkbox_xpath = '//input[@name="boxStationID" and @value=%s]' %(all_station_ids[start_index + checkno])
+                        driver.find_element_by_xpath(checkbox_xpath).click()
+                        
+                    # Include field data in selection
+                    field_data_xpath = '//input[@name="rdoFielddata" and @value="Yes"]'
+                    driver.find_element_by_xpath(field_data_xpath).click()                
+                    
+                    # Get data for all dates available
+                    all_dates_xpath = '//input[@name="rdoDate" and @value="AllDates"]'
+                    driver.find_element_by_xpath(all_dates_xpath).click()
+                    
+                    # Select download format (Excel) and download!
+                    format_selection = Select(driver.find_element_by_name("ddmOutputFormat"))
+                    format_selection.select_by_visible_text("MS Excel")
+                    button_xpath = '//input[@type="submit" and @value="Get Data"]'
+                    driver.find_element_by_xpath(button_xpath).click()
+                    
+                    #Wait until the file has finished downloading before trying to load it into the sql database
+                    wait_time = 0
+                    while os.path.isfile(default_download_dir + '/' + default_download_filename) == False:
+                        time.sleep(wait_time_interval)
+                        wait_time += wait_time_interval
+                        if wait_time > download_timeout:
+                            print('Error: Script Aborted because the file for selection %i-%i for %s never finished downloading' %(start_index, start_index + range(nchecks), county))
+                            quit() 
+                                                
+                    # Check that the excel file isn't empty (use size to check, maybe a better method...)                     
+                    file_stats = os.stat(default_download_dir + '/' + default_download_filename)                             
+                    if file_stats.st_size > 0:    
+                        table = []
+                        wait_time = 0
+                        table_load_start_time = time.time() 
+                        
+                        # Keep trying to load the table until it loads or timeout                   
+                        while table == []:
+                            # Use cp1252 encoding to handle µ and other special characters when reading in the excel file
+                            with open(default_download_dir + '/'+ default_download_filename, encoding = 'cp1252', errors = 'replace') as excel_file:
+                                input = csv.reader(excel_file, delimiter = '\t')
+                                table = []
+                                for i, row in enumerate(input):
+                                    if i == 0:
+                                        nvariables = len(row)
+                                    if len(row) <= nvariables:
+                                        table.append(row)
+                                    else:
+                                        print("Encountered an irregular row in one of the tables for county %s and skipped it:" %(county))
+                                        print(row)      
+                            wait_time = time.time() - table_load_start_time
+                            if wait_time > table_load_timeout:
+                                print('Error: Script Aborted because python could not read in the file for selection %i-%i for %s' %(start_index, start_index + range(nchecks), county))  
+                                quit()                      
+                        if table:
+                            # Add empty observation to last variable of each row if table doesn't identify it (because they are all missing)
+                            for row in table:
+                                while len(row) < nvariables:
+                                    row.append('')
+                                        
+                            #Add the county's data to the SQL database
+                            cursor.executemany(SQL_import_data %(county),table[1:])
+                            conn.commit()
+                      
+                    #Delete the downloaded file so that the next one can be downloaded                       
+                    os.remove(default_download_dir + '/' + default_download_filename) 
+                   
+                    # Uncheck the boxes    
+                    for checkno in range(nchecks):
+                        checkbox_xpath = '//input[@name="boxStationID" and @value=%s]' %(all_station_ids[start_index + checkno])
+                        driver.find_element_by_xpath(checkbox_xpath).click()
+                    
+                    start_index += nchecks   
+                else:
+                    #Delete the downloaded file so that the next one can be downloaded                       
+                    os.remove(default_download_dir + '/' + default_download_filename) 
+                      
+            minutes_elapsed = (time.time() - next_start_time)/60
+            next_start_time = time.time()
+            
+            #Write water quality data for all counties in the SQL database to a file in the given location
+            all_rows = cursor.execute("""SELECT * FROM wql_data""")        
+            # Use cp1252 encoding to handle µ and other special characters when writing to the csv file
+            with open(download_dir + '/%s_wql_data.csv' %(county), 'w', newline = '' , encoding = 'cp1252', errors = 'replace') as csv_file:
+                writer = csv.writer(csv_file, delimiter=',')
+                # Write the header to the output file  
+                writer.writerow([i[0] for i in all_rows.description])     
+                for row in all_rows:
+                    writer.writerow(row)
+            
+            print('Finished downloading water quality data for %s. The process took %i minutes' %(county, minutes_elapsed))
+            
+            #Close SQL connection
+            conn.close()   
 
+    # Close browser when finished
+    driver.close()    
+    
+    #Print time elapsed to the log
+    minutes_elapsed = (time.time() - start_time)/60
+    print('Data finished downloading. The process took: %i minutes' %(minutes_elapsed))  
+    
 
-
-
+download_all_water_quality_data('Chrome', 
+                                'http://water.ca.gov/waterdatalibrary/waterquality/station_county/index.cfm', 
+                                '/Users/user/Documents/California Water Data/Groundwater Quality Data')
