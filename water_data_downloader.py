@@ -16,6 +16,7 @@ import os
 from queue import Queue
 import csv
 import time
+import xlrd
 from math import ceil
 
 
@@ -493,3 +494,6 @@ def download_all_water_quality_data(browser, wql_start_url, download_dir):
 download_all_water_quality_data('Chrome', 
                                 'http://water.ca.gov/waterdatalibrary/waterquality/station_county/index.cfm', 
                                 '/Users/user/Documents/California Water Data/Groundwater Quality Data')
+    
+
+
