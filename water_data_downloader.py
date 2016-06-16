@@ -2,7 +2,7 @@
 Created on Mar 31, 2015
 Tries to download all of the water quality data 
 from the www.water.ca.gov website
-@author: jbolorinos
+@author: jbolorinos who is aweseome
 '''
 
 from urllib import request, parse
